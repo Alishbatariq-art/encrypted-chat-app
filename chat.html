@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>🔐 Encrypted Chat</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    h1 { color: #a78bfa; margin-bottom: 20px; font-size: 22px; }
+    #login { background: #16213e; padding: 30px; border-radius: 12px; width: 320px; text-align: center; }
+    #login input { width: 100%; padding: 10px; margin: 8px 0; border-radius: 8px; border: 1px solid #a78bfa; background: #0f3460; color: #fff; font-size: 15px; }
+    #login button { width: 100%; padding: 10px; background: #a78bfa; color: #fff; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; margin-top: 8px; }
+    #chatbox { display: none; flex-direction: column; width: 700px; height: 85vh; background: #16213e; border-radius: 14px; overflow: hidden; }
+    #header { background: #0f3460; padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; }
+    #header span { color: #a78bfa; font-weight: bold; font-size: 16px; }
+    #status { font-size: 12px; color: #4ade80; }
+    #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { background: #0f3460; border-radius: 10px; padding: 10px 14px; max-width: 90%; }
+    .msg .sender { font-size: 11px; color: #a78bfa; margin-bottom: 4px; font-weight: bold; }
+    .msg .plain { font-size: 14px; color: #e2e8f0; }
+    .msg .enc { font-size: 10px; color: #64748b; word-break: break-all; margin-top: 6px; background: #1e293b; padding: 6px; border-radius: 6px; border-left: 3px solid #ef4444; }
+    .msg .enc-label { font-size: 10px; color: #ef4444; margin-top: 4px; }
+    .msg.mine { align-self: flex-end; background: #1e1b4b; }
+    #input-area { padding: 14px; background: #0f3460; display: flex; gap: 10px; }
+    #input-area input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #a78bfa; background: #1a1a2e; color: #fff; font-size: 14px; }
+    #input-area button { padding: 10px 20px; background: #a78bfa; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    #key-display { font-size: 10px; background: #0f3460; color: #64748b; padding: 6px 10px; word-break: break-all; border-top: 1px solid #1e293b; }
+  </style>
+</head>
+<body>
+
+  <!-- LOGIN SCREEN -->
+  <div id="login">
+    <h1>🔐 Encrypted Chat</h1>
+    <input id="username" placeholder="Enter your name" />
+    <button onclick="joinChat()">Join Secure Chat</button>
+  </div>
+
+  <!-- CHAT SCREEN -->
+  <div id="chatbox">
+    <div id="header">
+      <span>🔐 Encrypted Chat App</span>
+      <span id="status">Waiting for second user...</span>
+    </div>
+    <div id="messages"></div>
+    <div id="key-display">🔑 Your AES Key (encrypted): <span id="aes-display">Not yet assigned</span></div>
+    <div id="input-area">
+      <input id="msg-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter') sendMsg()" disabled/>
+      <button onclick="sendMsg()" id="send-btn" disabled>Send 🔒</button>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    let myUsername = '';
+
+    // Generate RSA keys in browser
+    async function generateRSAKeys() {
+      const keyPair = await window.crypto.subtle.generateKey(
+        { name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+        true, ['encrypt', 'decrypt']
+      );
+      const pubKey = await window.crypto.subtle.exportKey('spki', keyPair.publicKey);
+      const pubKeyB64 = btoa(String.fromCharCode(...new Uint8Array(pubKey)));
+      return {
+        publicKeyPem: '-----BEGIN PUBLIC KEY-----\n' + pubKeyB64 + '\n-----END PUBLIC KEY-----',
+        privateKey: keyPair.privateKey
+      };
+    }
+
+    // Join chat - send public key to server
+    async function joinChat() {
+      myUsername = document.getElementById('username').value.trim();
+      if (!myUsername) return alert('Please enter your name!');
+      const keys = await generateRSAKeys();
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('chatbox').style.display = 'flex';
+      socket.emit('register', { username: myUsername, public_key: keys.publicKeyPem });
+    }
+
+    // Welcome message
+    socket.on('registered', (data) => {
+      addSystemMsg(data.message);
+    });
+
+    // Both users connected - enable chat
+    socket.on('chat_ready', (data) => {
+      document.getElementById('status').textContent = '✅ Secure connection established!';
+      document.getElementById('msg-input').disabled = false;
+      document.getElementById('send-btn').disabled = false;
+      addSystemMsg(data.message);
+    });
+
+    // Show encrypted AES key at bottom
+    socket.on('aes_key', (data) => {
+      document.getElementById('aes-display').textContent = data.encrypted_key.substring(0, 80) + '...';
+    });
+
+    // Send message - encrypt with Base64 and send original too
+    function sendMsg() {
+      const msg = document.getElementById('msg-input').value.trim();
+      if (!msg) return;
+      const encStr = btoa(unescape(encodeURIComponent(msg)));
+      socket.emit('send_message', { encrypted_message: encStr, original: msg });
+      document.getElementById('msg-input').value = '';
+    }
+
+    // Receive message - show both plain text and encrypted
+    socket.on('receive_message', (data) => {
+      const messages = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = 'msg' + (data.sender === myUsername ? ' mine' : '');
+      div.innerHTML =
+        '<div class="sender">' + data.sender + '</div>' +
+        '<div class="plain">' + data.original + '</div>' +
+        '<div class="enc-label">🔒 Encrypted on wire:</div>' +
+        '<div class="enc">' + data.encrypted + '</div>';
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+    });
+
+    // System messages (green text in center)
+    function addSystemMsg(text) {
+      const messages = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.style.cssText = 'text-align:center;font-size:12px;color:#4ade80;padding:4px';
+      div.textContent = '🔐 ' + text;
+      messages.appendChild(div);
+    }
+  </script>
+
+</body>
+</html>
